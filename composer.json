@@ -1,0 +1,18 @@
+{
+    "name": "oonix/encryption-utils",
+    "description": "Convenience wrapper for openssl_[en|de]crypt()",
+    "require": {
+        "php": ">=5.4.0"
+    },
+    "license": "GPL-3.0",
+    "authors": [
+        {
+            "name": "Arran Schlosberg",
+            "email": "arran@oonix.com.au"
+        }
+    ],
+    "minimum-stability": "stable",
+    "autoload": {
+        "files": ["src/EncUtils.php", "src/EncryptException.php"]
+	}
+}
