@@ -25,7 +25,7 @@ class EncUtils {
 	 * @var bool
 	 * @access private
 	 */
-	private $_allow_weak_iv;
+	private $_allow_weak_rand;
 	
 	/**
 	 * Options to be passed to openssl_[en|de]crypt()
@@ -46,17 +46,53 @@ class EncUtils {
 	private $_key;
 	
 	/**
+	 * As PHP does not currently support GCM cipher mode, automatically include a ciphertext MAC. Set explicitly to false to disable;
+	 * 
+	 * @var bool
+	 * @access private
+	 */
+	private $_hmacAlgo;
+	
+	/**
+	 * The key to use when generating the HMAC of the ciphertext. If null, one is generated from the encryption key and a salt.
+	 * 
+	 * @var string
+	 * @access private
+	 */
+	private $_hmacKey;
+	
+	/**
+	 * Entropy for the generation of the HMAC key when one is not explicitly provided.
+	 * 
+	 * @var string
+	 * @access private
+	 */
+	private $_hmacSalt;
+	
+	/**
+	 * Some functions modify private attributes in a manner that is undesirable for multiple encrypt/decrypt operations.
+	 * For example, without an explicit HMAC key, one is created and then used for the life of the object.
+	 * Store the attributes in a config stack, push at the beginning of encrypt/decrypt and pop at the end
+	 * 
+	 * @var array
+	 * @access private
+	 */
+	private $_configStack = array();
+	
+	/**
 	 * Constructor
 	 *
 	 * Store the configuration directives. Implements checks and then stores each in the equivalent private parameter.
 	 *
 	 * @param string $key				See attribute $_key.
 	 * @param string $cipher			See attribute $_cipher.
-	 * @param int $openssl_options	See attribute $_openssl_options.
-	 * @param bool $allow_weak_iv		See attribute $_allow_weak_iv.
+	 * @param int $openssl_options		See attribute $_openssl_options.
+	 * @param bool $allow_weak_rand		See attribute $_allow_weak_rand.
+	 * @param bool $hmacAlgo				See attribute $_hmacAlgo.
+	 * @param string $hmacKey			See attribute $_hmacKey.
 	 * @access public
 	 */
-	public function __construct($key, $cipher, $openssl_options = 0, $allow_weak_iv = false){
+	public function __construct($key, $cipher, $openssl_options = 0, $allow_weak_rand = false, $hmacAlgo = 'sha512', $hmacKey = null){
 		if(!function_exists('openssl_encrypt')){
 			throw new EncryptException("OpenSSL encryption functions required.");
 		}
@@ -64,11 +100,17 @@ class EncUtils {
 		if(!in_array($cipher, openssl_get_cipher_methods(true))){
 			throw new EncryptException("The cipher '{$cipher}' is not available. Use openssl_get_cipher_methods() for a list of available methods.");
 		}
+		
+		if($hmacAlgo!==false && !in_array($hmacAlgo, hash_algos())){
+			throw new EncryptException("The hash algorithm '{$hmacAlgo}' is not available. Use hash_algos() for a list of available algorithms.");
+		}
 
 		$this->_key = $key;
 		$this->_cipher = $cipher;
-		$this->_allow_weak_iv = $allow_weak_iv===true;
+		$this->_allow_weak_rand = $allow_weak_rand===true;
 		$this->_openssl_options = is_int($openssl_options) ? $openssl_options : 0;
+		$this->_hmacAlgo = $hmacAlgo;
+		$thic->_hmacKey = $hmacKey;
 	}
 	
 	/**
@@ -90,16 +132,27 @@ class EncUtils {
 	 * @return mixed
 	 */
 	public function encrypt($plain_text, $as_array = false){
+		$this->configPush();
 		$strong = false;
 		$iv = openssl_random_pseudo_bytes(openssl_cipher_iv_length($this->_cipher), $strong);
-		if(!$strong && $this->_allow_weak_iv!==true){
+		if(!$strong && $this->_allow_weak_rand!==true){
 			throw new EncryptException("A cryptographically weak algorithm was used in the generation of the initialisation vector.");
 		}
 		$cipher_text = array(
-			$this->useRaw() ? $iv : base64_encode($iv),
-			openssl_encrypt($plain_text, $this->_cipher, $this->_key, $this->_openssl_options, $iv)
+			$iv,
+			openssl_encrypt($plain_text, $this->_cipher, $this->_key, $this->_openssl_options & OPENSSL_RAW_DATA, $iv) //will base64 encode later if not raw
 		);
-		return $as_array ? $cipher_text : implode("", $cipher_text);
+		$prefix = 0;
+		if($this->_hmacAlgo!==false){
+			$prefix = 1;
+			$hmac = $this->hmac($cipher_text[1]); //this MUST occur before unshifting values otherwise hmacSalt won't yet exist if it is to be generated
+			array_unshift($cipher_text, $this->_hmacSalt, $hmac);
+		}
+		if(!$this->useRaw()){
+			$this->base64($cipher_text);
+		}
+		$this->configPop();
+		return $as_array ? $cipher_text : $prefix.implode($this->useRaw() ? null : "_", $cipher_text); //underscore is not part of MIME base64
 	}
 	
 	/**
@@ -110,26 +163,54 @@ class EncUtils {
 	 * @return string
 	 */
 	public function decrypt($cipher_text){
-		if(is_array($cipher_text)){
-			$iv = $cipher_text[0];
-			$cipher_text = $cipher_text[1];
-		}
-		else {
-			$len = openssl_cipher_iv_length($this->_cipher);
+		$this->configPush();
+		$hmac = false;
+		if(!is_array($cipher_text)){
+			$authenticate = substr($cipher_text, 0, 1)=='1';
+			$cipher_text = substr($cipher_text, 1);
 			if($this->useRaw()){
-				$iv = substr($cipher_text, 0, $len);
-				$cipher_text = substr($cipher_text, $len);
+				$lengths = array(openssl_cipher_iv_length($this->_cipher));
+				if($authenticate){
+					array_unshift($lengths, 64, strlen(hash($this->_hmacAlgo, "", true)));
+				}
+				$arr = array();
+				foreach($lengths as $len){
+					$arr[] = substr($cipher_text, 0, $len);
+					$cipher_text = substr($cipher_text, $len);
+				}
+				$arr[] = $cipher_text;
+				$cipher_text = $arr;
 			}
 			else {
-				/**
-				 * The number of = used to pad base 64 strings is dependent on the number of bytes in the final 2-byte grouping; = for even and == for odd
-				 */
-				$iv_pad = ($len % 2) ? "=" : "==";
-				list($iv, $cipher_text) = explode($iv_pad, $cipher_text, 2);
-				$iv = base64_decode("{$iv}{$iv_pad}");
+				$cipher_text = explode("_", $cipher_text);
 			}
 		}
-		return openssl_decrypt($cipher_text, $this->_cipher, $this->_key, $this->_openssl_options, $iv);
+		if(!$this->useRaw()){
+			$this->base64($cipher_text, false);
+		}
+		if(count($cipher_text)==4){
+			$this->_hmacSalt = array_shift($cipher_text);
+			$hmac = array_shift($cipher_text);
+		}
+		$iv = $cipher_text[0];
+		$cipher_text = $cipher_text[1];
+		if($hmac!==false){
+			$check = $this->hmac($cipher_text);
+			if($hmac!==$check){
+				throw new EncryptException("Cipher text authentication failed.");
+			}
+		}
+		$this->configPop();
+		return openssl_decrypt($cipher_text, $this->_cipher, $this->_key, $this->_openssl_options, $iv);;
+	}
+	
+	/**
+	 * Base64 encode / decode array of strings
+	 */
+	public function base64(&$arr, $encode = true){
+		foreach($arr as $k => $v){
+			$arr[$k] = $encode ? base64_encode($v) : base64_decode($v);
+		}
 	}
 	
 	/**
@@ -144,6 +225,43 @@ class EncUtils {
 			$this->$key = $val;
 		}
 		return $key;
+	}
+	
+	/**
+	 * Store a copy of the current config in a stack
+	 */
+	private function configPush(){
+		$curr = get_object_vars($this);
+		unset($curr['_configStack']);
+		$this->_configStack[] = $curr;
+	}
+	
+	/**
+	 * Return config from the top of the stack, or leave as-is if empty
+	 */
+	private function configPop(){
+		if(count($this->_configStack)){
+			$reset = array_pop($this->_configStack);
+			foreach($reset as $k => $v){
+				$this->$k = $v;
+			}
+		}
+	}
+	
+	/**
+	 * Compute the HMAC of cipher text; optionally generate the HMAC key from the encryption key if it is not explicitly set.
+	 */
+	public function hmac($cipher_text){
+		if(is_null($this->_hmacKey)){
+			if(is_null($this->_hmacSalt)){
+				$this->_hmacSalt = openssl_random_pseudo_bytes(64, $strong);
+				if(!$strong && $this->_allow_weak_rand!==true){
+					throw new EncryptException("A cryptographically weak algorithm was used in the generation of the HMAC salt.");
+				}
+			}
+			$this->_hmacKey = hash_pbkdf2($this->_hmacAlgo, $this->_key, $this->_hmacSalt, 128, 0, true);
+		}
+		return hash_hmac($this->_hmacAlgo, $cipher_text, $this->_hmacKey, 1);
 	}
 }
 
