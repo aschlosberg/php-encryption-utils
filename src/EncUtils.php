@@ -110,7 +110,7 @@ class EncUtils {
 		$this->_allow_weak_rand = $allow_weak_rand===true;
 		$this->_openssl_options = is_int($openssl_options) ? $openssl_options : 0;
 		$this->_hmacAlgo = $hmacAlgo;
-		$thic->_hmacKey = $hmacKey;
+		$this->_hmacKey = $hmacKey;
 	}
 	
 	/**
