@@ -263,6 +263,51 @@ class EncUtils {
 		}
 		return hash_hmac($this->_hmacAlgo, $cipher_text, $this->_hmacKey, 1);
 	}
+	
+	/*
+	 *  Implement PRK as defined in RFC 5869. Separate it from the HKDF function as the test vectors include the PRK value.
+	 *  
+	 *  @param string $IKM   A source of entropy (Input Keying Material)
+	 *  @param string $salt  Although salt is optional in HKDF because it has a default value, the PRK utilises this value so has no default here.
+	 *  @param string $hash  Algorithm for use in HMAC
+	 *  @return string       Binary string
+	 */
+	public static function PRK($IKM, $salt, $hash){
+      return hash_hmac($hash, $IKM, $salt, true);
+   }
+   
+   /*
+    * Implement HKDF as defined in RFC 5869.
+    * 
+    * @param string $IKM   A source of entropy (Input Keying Material)
+    * @param integer $L    Length of output. Although RFC does not include a default value, this implementation defaults to the output size of the hash algorithm.
+    * @param string $info  Context info for the key generation.
+    * @param string $salt  Optional as its default value is stipulated in the RFC
+    * @param string $hash  Algorithm for use in HMAC
+    * @return string       Binary string
+    */
+   public static function hkdf($IKM, $L=null, $info=null, $salt=null, $hash='sha256'){
+      $HashLen = strlen(hash_hmac($hash, null, null)) / 2;
+      $L = $L ?: $HashLen;
+      if($L > 255*$HashLen){
+         return null;
+      }
+       
+      //test vectors pass when leaving salt as null; could exclude this line, but then it's dependent on some inner PHP workings that may change
+      $salt = $salt ?: str_repeat("\0", $HashLen);
+       
+      $PRK = self::PRK($IKM, $salt, $hash);
+       
+      $N = ceil($L / $HashLen);
+      $T = [null];
+       
+      for($i=1; $i<=$N; $i++){
+         $iterator = hex2bin(str_pad($i, 2, "0", STR_PAD_LEFT));
+         $T[$i] = hash_hmac($hash, $T[$i-1].$info.$iterator, $PRK, true);
+      }
+       
+      return substr(implode(null, $T), 0, $L);
+   }
 }
 
 ?>
