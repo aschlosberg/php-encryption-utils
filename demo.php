@@ -21,6 +21,10 @@ echo "<h3>Decrypt detects array or string input</h3>";
 var_dump($enc->decrypt($enc->encrypt(PLAIN)));
 var_dump($enc->decrypt($enc->encrypt(PLAIN, true)));
 
+echo "<h3>Decryption when using of HKDF.</h3>";
+$enc = new EncUtils("c6ZTakOudbvu7aad", "AES-128-CBC", null, null, 'sha512', null, true);
+var_dump($enc->decrypt($enc->encrypt(PLAIN)));
+
 echo "<h3>HKDF passes all test vectors as defined in RFC 5869</h3>";
 $raw = [
    ['Test Case 1', 'sha256', '0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b', '000102030405060708090a0b0c', 'f0f1f2f3f4f5f6f7f8f9', 42, '077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5', '3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865'],

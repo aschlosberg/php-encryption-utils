@@ -46,6 +46,14 @@ class EncUtils {
 	private $_key;
 	
 	/**
+	 * Input keying material for HKDF. Is the value provided as $key, and $_key is instead derived using HKDF.
+	 *
+	 * @var string
+	 * @access private
+	 */
+	private $_ikm;
+	
+	/**
 	 * As PHP does not currently support GCM cipher mode, automatically include a ciphertext MAC. Set explicitly to false to disable;
 	 * 
 	 * @var bool
@@ -88,11 +96,12 @@ class EncUtils {
 	 * @param string $cipher			See attribute $_cipher.
 	 * @param int $openssl_options		See attribute $_openssl_options.
 	 * @param bool $allow_weak_rand		See attribute $_allow_weak_rand.
-	 * @param bool $hmacAlgo				See attribute $_hmacAlgo.
-	 * @param string $hmacKey			See attribute $_hmacKey.
+	 * @param string $hmacAlgo				See attribute $_hmacAlgo.
+	 * @param mixed $hmacKey			See attribute $_hmacKey. Ignored if $useHKDF is true.
+	 * @param bool $useHKDF         Use HKDF to derive both the encryption key and the HMAC key, using $_key as the IKM. Will overwrite $_key and $_hmacKey.
 	 * @access public
 	 */
-	public function __construct($key, $cipher, $openssl_options = 0, $allow_weak_rand = false, $hmacAlgo = 'sha512', $hmacKey = null){
+	public function __construct($key, $cipher, $openssl_options = 0, $allow_weak_rand = false, $hmacAlgo = 'sha512', $hmacKey = null, $useHKDF = false){
 		if(!function_exists('openssl_encrypt')){
 			throw new EncryptException("OpenSSL encryption functions required.");
 		}
@@ -105,12 +114,19 @@ class EncUtils {
 			throw new EncryptException("The hash algorithm '{$hmacAlgo}' is not available. Use hash_algos() for a list of available algorithms.");
 		}
 
-		$this->_key = $key;
+		if($useHKDF && $hmacAlgo!==false){
+		   $this->_ikm = $key;
+		   $this->_key = self::hkdf($key, 256, 'Encryption', $this->hmacSalt(), $hmacAlgo);
+		   $this->_hmacKey = self::hkdf($key, 256, 'HMAC', $this->hmacSalt(), $hmacAlgo);
+		}
+		else {
+		   $this->_key = $key;
+		   $this->_hmacKey = $hmacKey;
+		}
 		$this->_cipher = $cipher;
 		$this->_allow_weak_rand = $allow_weak_rand===true;
 		$this->_openssl_options = is_int($openssl_options) ? $openssl_options : 0;
 		$this->_hmacAlgo = $hmacAlgo;
-		$this->_hmacKey = $hmacKey;
 	}
 	
 	/**
@@ -196,7 +212,7 @@ class EncUtils {
 		$cipher_text = $cipher_text[1];
 		if($hmac!==false){
 			$check = $this->hmac($cipher_text);
-			if($hmac!==$check){
+			if((function_exists('hash_equals') && !hash_equals($check, $hmac)) || $check!=$hmac){ //timing-attack mitigation if available
 				throw new EncryptException("Cipher text authentication failed.");
 			}
 		}
@@ -252,19 +268,30 @@ class EncUtils {
 	 * Compute the HMAC of cipher text; optionally generate the HMAC key from the encryption key if it is not explicitly set.
 	 */
 	public function hmac($cipher_text){
-		if(is_null($this->_hmacKey)){
-			if(is_null($this->_hmacSalt)){
-				$this->_hmacSalt = openssl_random_pseudo_bytes(64, $strong);
-				if(!$strong && $this->_allow_weak_rand!==true){
-					throw new EncryptException("A cryptographically weak algorithm was used in the generation of the HMAC salt.");
-				}
-			}
-			$this->_hmacKey = hash_pbkdf2($this->_hmacAlgo, $this->_key, $this->_hmacSalt, 128, 0, true);
+		if(is_null($this->_hmacKey)){ //if $useHKDF was stipulated in construction then this will never be the case; this deprecated PBKDF2 method was before I knew of HKDF, but remains for backward compatibility
+			$this->_hmacKey = hash_pbkdf2($this->_hmacAlgo, $this->_key, $this->hmacSalt(), 128, 0, true);
 		}
 		return hash_hmac($this->_hmacAlgo, $cipher_text, $this->_hmacKey, 1);
 	}
 	
-	/*
+	/**
+	 * Return a salt for use with either:
+	 * (a) Generation of an HMAC key if not using HKDF, or
+	 * (b) Use in HKDF
+	 * 
+	 * Generate if not already existing.
+	 */
+	public function hmacSalt(){
+	   if(is_null($this->_hmacSalt)){
+	      $this->_hmacSalt = openssl_random_pseudo_bytes(64, $strong);
+	      if(!$strong && $this->_allow_weak_rand!==true){
+	         throw new EncryptException("A cryptographically weak algorithm was used in the generation of the HMAC salt.");
+	      }
+	   }
+	   return $this->_hmacSalt;
+	}
+	
+	/**
 	 *  Implement PRK as defined in RFC 5869. Separate it from the HKDF function as the test vectors include the PRK value.
 	 *  
 	 *  @param string $IKM   A source of entropy (Input Keying Material)
@@ -276,11 +303,11 @@ class EncUtils {
       return hash_hmac($hash, $IKM, $salt, true);
    }
    
-   /*
+   /**
     * Implement HKDF as defined in RFC 5869.
     * 
     * @param string $IKM   A source of entropy (Input Keying Material)
-    * @param integer $L    Length of output. Although RFC does not include a default value, this implementation defaults to the output size of the hash algorithm.
+    * @param int $L    Length of output. Although RFC does not include a default value, this implementation defaults to the output size of the hash algorithm.
     * @param string $info  Context info for the key generation.
     * @param string $salt  Optional as its default value is stipulated in the RFC
     * @param string $hash  Algorithm for use in HMAC
