@@ -14,7 +14,7 @@ var_dump($enc->encrypt(PLAIN));
 var_dump($enc->encrypt(PLAIN, true));
 
 echo "<h3>Return as raw binary data</h3>";
-$enc->config('openssl_options', OPENSSL_RAW_DATA);
+$enc = new EncUtils("c6ZTakOudbvu7aad", "AES-128-CBC", OPENSSL_RAW_DATA);
 var_dump($enc->encrypt(PLAIN));
 
 echo "<h3>Decrypt detects array or string input</h3>";
@@ -56,6 +56,7 @@ foreach($vectors as $v){
    printf("<h4>%s</h4>", $v['name']);
    printf("PRK: %s<br />", $PRK===$v['PRK'] ? 'OK' : 'ERROR');
    printf("OKM: %s<br />", $OKM===$v['OKM'] ? 'OK' : 'ERROR');
+   echo EncUtils::hkdf($v['IKM'], $v['L'], $v['info'], $v['salt'], $v['hash'], false);
 }
 
 

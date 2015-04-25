@@ -230,20 +230,6 @@ class EncUtils {
 	}
 	
 	/**
-	 * Get / set configuration
-	 */
-	public function config($key, $val = null){
-		$key = "_{$key}";
-		if(!isset($this->$key)){
-			throw new EncryptException("Configuration directive '{$key}' does not exist.");
-		}
-		if(!is_null($val)){
-			$this->$key = $val;
-		}
-		return $key;
-	}
-	
-	/**
 	 * Store a copy of the current config in a stack
 	 */
 	private function configPush(){
@@ -311,9 +297,10 @@ class EncUtils {
     * @param string $info  Context info for the key generation.
     * @param string $salt  Optional as its default value is stipulated in the RFC
     * @param string $hash  Algorithm for use in HMAC
+    * @param string $raw   Return as raw binary or 
     * @return string       Binary string
     */
-   public static function hkdf($IKM, $L=null, $info=null, $salt=null, $hash='sha256'){
+   public static function hkdf($IKM, $L=null, $info=null, $salt=null, $hash='sha256', $raw = true){
       $HashLen = strlen(hash_hmac($hash, null, null)) / 2;
       $L = $L ?: $HashLen;
       if($L > 255*$HashLen){
@@ -332,8 +319,9 @@ class EncUtils {
          $iterator = hex2bin(str_pad($i, 2, "0", STR_PAD_LEFT));
          $T[$i] = hash_hmac($hash, $T[$i-1].$info.$iterator, $PRK, true);
       }
-       
-      return substr(implode(null, $T), 0, $L);
+      
+      $full = substr(implode(null, $T), 0, $L);
+      return $raw ? $full : bin2hex($full);
    }
 }
 
