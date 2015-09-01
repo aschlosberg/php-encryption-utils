@@ -4,7 +4,7 @@
     "require": {
         "php": ">=5.4.0"
     },
-    "license": "GPL-3.0",
+    "license": "MIT",
     "authors": [
         {
             "name": "Arran Schlosberg",
